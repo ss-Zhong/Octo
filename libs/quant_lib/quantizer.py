@@ -1,4 +1,6 @@
+# coding: utf-8
 import numpy as np
+
 
 # 随机舍入round
 def round(M):
@@ -6,8 +8,8 @@ def round(M):
     M_q = M_q.astype(np.int)
     return M_q
 
-class ConvQuantizer:
 
+class ConvQuantizer:
     def __init__(self, num_bits = 8):
         self.n = num_bits
 
@@ -42,6 +44,3 @@ class ConvQuantizer:
     def dequantizeW(self, W_q):
         W_f = (W_q - self.W_zeroPoint) * self.W_scale
         return W_f
-    
-    def dequantizeY(self, Y_q):
-        return Y_q * self.X_scale * self.W_scale
