@@ -1,4 +1,3 @@
-# coding: utf-8
 import numpy as np
 
 class SGD:
@@ -6,5 +5,4 @@ class SGD:
         self.lr = lr
         
     def update(self, params, grads):
-        for key in params.keys():
-            params[key] -= self.lr * grads[key] 
+        params -= self.lr * grads
