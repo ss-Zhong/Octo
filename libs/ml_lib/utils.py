@@ -1,5 +1,4 @@
-import numpy as np
-from . import hint
+from . import *
 
 # 将输入图像中每个局部区域的像素按列展开，形成一个列向量
 def im2col(input_data, filter_h, filter_w, stride=1, pad=0):

@@ -1,4 +1,4 @@
-import numpy as np
+from . import *
 
 class SGD:
     def __init__(self, lr=0.01):

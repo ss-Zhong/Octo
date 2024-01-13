@@ -1,14 +1,13 @@
 from libs.ml_lib.layers import *
-from libs.ml_lib import optimizer
 
 cfg = [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M']
 
 class VGG11:
-    def __init__(self, optimizer):
+    def __init__(self, optimizer, quant_mode=QuantMode.FullPrecision):
         self.optimizer = optimizer
-        self.train_mode = True
+        self.quant_mode = quant_mode
         self.layers = self.make_layers(cfg, input_channel = 3, batch_norm=True)
-        self.Softmax = SoftmaxWithLoss()
+        self.softmax = SoftmaxWithLoss()
 
     def predict(self, x):
         for layer in self.layers:
@@ -17,18 +16,18 @@ class VGG11:
             else:
                 x = layer.forward(x)
 
-        res, _ = self.Softmax.forward(x)
+        res, _ = self.softmax.forward(x)
         return res
         
     def forward(self, x, t):
         for layer in self.layers:
             x = layer.forward(x)
 
-        _, loss = self.Softmax.forward(x, t)
+        _, loss = self.softmax.forward(x, t)
         return loss
     
     def backward(self):
-        dout = self.Softmax.backward()
+        dout = self.softmax.backward()
 
         for layer in reversed(self.layers):
             dout = layer.backward(dout)
@@ -42,7 +41,10 @@ class VGG11:
             if l == 'M':
                 layers += [Pooling(2, 2)]
                 continue
-            layers += [Conv(optimizer=self.optimizer, input_channel=input_channel, output_channel=l, kernel_size=3, pad=1)]
+            layers += [Conv(optimizer=self.optimizer, 
+                            input_channel=input_channel, output_channel=l, 
+                            kernel_size=3, pad=1, 
+                            quant_mode=self.quant_mode)]
             if batch_norm == True:
                 layers += [BatchNorm(optimizer=self.optimizer, input_size=l)]
             layers += [Relu()]

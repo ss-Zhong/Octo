@@ -1,3 +1,4 @@
+# LibHINT = False
 LibHINT = True
 
 def hint(*args):
