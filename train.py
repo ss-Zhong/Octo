@@ -9,14 +9,14 @@ import time
 Parameter Setting
 '''
 # train setting
-batch_size = 64
+batch_size = 32
 epoch_num = 20
 lr = 0.01
 quant_mode = QuantMode.FullPrecision
 
 # model setting
 model = VGG11(optimizer=optimizer.SGD(lr=lr), quant_mode = quant_mode)
-dataset=cifar10.loadCIFAR10(normalize=True)
+dataset = cifar10.loadCIFAR10(normalize=True)
 num_classes = 1000
 
 # experiment setting

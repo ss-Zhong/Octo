@@ -31,7 +31,7 @@ class Sigmoid:
         self.out = None
 
     def forward(self, x):
-        out = 1 / (1 + np.exp(-x))
+        out = 1 / (1 + mypy.exp(-x))
         self.out = out
         return out
 
@@ -60,7 +60,7 @@ class SoftmaxWithLoss:
             dx = (self.y - self.t) / batch_size
         else:
             dx = self.y.copy()
-            dx[np.arange(batch_size), self.t] -= 1
+            dx[mypy.arange(batch_size), self.t] -= 1
             dx = dx / batch_size
         
         return dx
@@ -75,9 +75,9 @@ class Conv:
             self.W = W
             self.b = b
         elif input_channel and output_channel: 
-            self.W = np.random.normal(loc=0, scale=0.01, size=(output_channel, input_channel, kernel_size, kernel_size))
-            # self.W = np.zeros([output_channel, input_channel, kernel_size, kernel_size], dtype=float)
-            self.b = np.zeros(output_channel, dtype=float)
+            self.W = mypy.random.normal(loc=0, scale=0.01, size=(output_channel, input_channel, kernel_size, kernel_size))
+            # self.W = mypy.zeros([output_channel, input_channel, kernel_size, kernel_size], dtype=float)
+            self.b = mypy.zeros(output_channel, dtype=float)
         else:
             print("卷积核未初始化")
 
@@ -104,7 +104,7 @@ class Conv:
             col = im2col(x, H_W, W_W, self.stride, self.pad)                # col: N*out_h*out_w, C*H_W*W_W
             col_W = self.W.reshape(N_W, -1).T                               # col_W: C*H_W*W_W, N_W
 
-            out = np.dot(col, col_W) + self.b                               # out: N*out_h*out_w, N_W b: N_W
+            out = mypy.dot(col, col_W) + self.b                               # out: N*out_h*out_w, N_W b: N_W
             out = out.reshape(N, out_h, out_w, -1).transpose(0, 3, 1, 2)    # out: N, N_W, out_h, out_w
 
             self.x = x
@@ -120,7 +120,7 @@ class Conv:
             col_W_int8 = W_int8.reshape(N_W, -1).T
 
             # 调用pybind+Eigen
-            out_int8 = np.dot(col_int8, col_W_int8) #
+            out_int8 = mypy.dot(col_int8, col_W_int8) #
             out = self.quantizer.dequantizeY(out_int8) + self.b
             out = out.reshape(N, out_h, out_w, -1).transpose(0, 3, 1, 2)
 
@@ -135,16 +135,16 @@ class Conv:
         N_W, C, H_W, W_W = self.W.shape
         # dout: (N, N_W, out_h, out_w) -> (N*out_h*out_w, N_W)
         dout = dout.transpose(0, 2, 3, 1).reshape(-1, N_W)
-        db = np.sum(dout, axis=0)
+        db = mypy.sum(dout, axis=0)
 
         # 全精度，不进行量化
         if self.quant_mode == QuantMode.FullPrecision:
-            dW = np.dot(dout.T, self.col).reshape(N_W, C, H_W, W_W)
+            dW = mypy.dot(dout.T, self.col).reshape(N_W, C, H_W, W_W)
 
             self.optimizer.update(self.W, dW)
             self.optimizer.update(self.b, db)
 
-            dcol = np.dot(dout, self.col_W.T)
+            dcol = mypy.dot(dout, self.col_W.T)
             dx = col2im(dcol, self.x.shape, H_W, W_W, self.stride, self.pad)
         
         # 对称量化
@@ -153,12 +153,12 @@ class Conv:
             col_W_int8 = self.quantizer.quantizeWSymm(self.col_W)
             dout_int8 = self.quantizer.quantizeDOUTSymm(dout)
 
-            dW_int = np.dot(dout_int8.T, col_int8).reshape(N_W, C, H_W, W_W) #
+            dW_int = mypy.dot(dout_int8.T, col_int8).reshape(N_W, C, H_W, W_W) #
             dW_q = self.quantizer.dequantize_dW(dW_int)
             self.optimizer.update(self.W, dW_q)
             self.optimizer.update(self.b, db)
 
-            dcol_int = np.dot(dout_int8, col_W_int8.T) #
+            dcol_int = mypy.dot(dout_int8, col_W_int8.T) #
             dcol_q = self.quantizer.dequantize_dcol(dcol_int)
             dx = col2im(dcol_q, self.x.shape, H_W, W_W, self.stride, self.pad)
 
@@ -168,24 +168,24 @@ class Conv:
 class FC:
     def __init__(self, input_channel, output_channel, optimizer=SGD()):
         self.W = self.initialize_weights(input_channel, output_channel)
-        self.b = np.zeros((1, output_channel))
+        self.b = mypy.zeros((1, output_channel))
         self.optimizer = optimizer
 
         self.x = None
 
     def initialize_weights(self, input_channel, output_channel):
-        a = np.sqrt(2 / input_channel)
-        return np.random.normal(loc=0, scale=a, size=(input_channel, output_channel))
+        a = mypy.sqrt(2 / input_channel)
+        return mypy.random.normal(loc=0, scale=a, size=(input_channel, output_channel))
 
     def forward(self, x):
-        self.x = np.squeeze(x)
-        out = np.dot(self.x, self.W) + self.b
+        self.x = mypy.squeeze(x)
+        out = mypy.dot(self.x, self.W) + self.b
         return out
 
     def backward(self, dout):
-        dW = np.dot(self.x.T, dout)
-        db = np.sum(dout, axis=0, keepdims=True)
-        dx = np.dot(dout, self.W.T)
+        dW = mypy.dot(self.x.T, dout)
+        db = mypy.sum(dout, axis=0, keepdims=True)
+        dx = mypy.dot(dout, self.W.T)
 
         self.optimizer.update(self.W, dW)
         self.optimizer.update(self.b, db)
@@ -198,10 +198,10 @@ class BatchNorm:
         self.epsilon = epsilon
         self.momentum = momentum
         self.input_size = input_size
-        self.gamma = np.ones((1, input_size, 1, 1))  # 初始化为1
-        self.beta = np.zeros((1, input_size, 1, 1))  # 初始化为0
-        self.running_mean = np.zeros((1, input_size, 1, 1))
-        self.running_var = np.zeros((1, input_size, 1, 1))
+        self.gamma = mypy.ones((1, input_size, 1, 1))  # 初始化为1
+        self.beta = mypy.zeros((1, input_size, 1, 1))  # 初始化为0
+        self.running_mean = mypy.zeros((1, input_size, 1, 1))
+        self.running_var = mypy.zeros((1, input_size, 1, 1))
         self.optimizer = optimizer
 
         self.x = None
@@ -212,16 +212,16 @@ class BatchNorm:
     def forward(self, x, train_mode = True):
         self.x = x
         if train_mode:
-            self.mean = np.mean(x, axis=0)
-            self.var = np.var(x, axis=0)
-            self.x_normalized = (x - self.mean) / np.sqrt(self.var + self.epsilon)
+            self.mean = mypy.mean(x, axis=0)
+            self.var = mypy.var(x, axis=0)
+            self.x_normalized = (x - self.mean) / mypy.sqrt(self.var + self.epsilon)
             out = self.gamma * self.x_normalized + self.beta
 
             # 更新 running mean 和 running var
             self.running_mean = self.momentum * self.running_mean + (1 - self.momentum) * self.mean
             self.running_var = self.momentum * self.running_var + (1 - self.momentum) * self.var
         else:
-            self.x_normalized = (x - self.running_mean) / np.sqrt(self.running_var + self.epsilon)
+            self.x_normalized = (x - self.running_mean) / mypy.sqrt(self.running_var + self.epsilon)
             out = self.gamma * self.x_normalized + self.beta
 
         return out
@@ -229,13 +229,13 @@ class BatchNorm:
     def backward(self, dout):
         batch_size = dout.shape[0]
 
-        dgamma = np.sum(dout * self.x_normalized, axis=(0, 2, 3), keepdims=True)
-        dbeta = np.sum(dout, axis=(0, 2, 3), keepdims=True)
+        dgamma = mypy.sum(dout * self.x_normalized, axis=(0, 2, 3), keepdims=True)
+        dbeta = mypy.sum(dout, axis=(0, 2, 3), keepdims=True)
         dx_normalized = dout * self.gamma
 
-        dvar = np.sum(dx_normalized * (self.x - self.mean) * -0.5 * (self.var + self.epsilon) ** (-1.5), axis=0)
-        dmean = np.sum(dx_normalized * -1 / np.sqrt(self.var + self.epsilon), axis=0) + dvar * np.sum(-2 * (self.x - self.mean), axis=0) / batch_size
-        dx = dx_normalized / np.sqrt(self.var + self.epsilon) + dvar * 2 * (self.x - self.mean) / batch_size + dmean / batch_size
+        dvar = mypy.sum(dx_normalized * (self.x - self.mean) * -0.5 * (self.var + self.epsilon) ** (-1.5), axis=0)
+        dmean = mypy.sum(dx_normalized * -1 / mypy.sqrt(self.var + self.epsilon), axis=0) + dvar * mypy.sum(-2 * (self.x - self.mean), axis=0) / batch_size
+        dx = dx_normalized / mypy.sqrt(self.var + self.epsilon) + dvar * 2 * (self.x - self.mean) / batch_size + dmean / batch_size
 
         # 更新 gamma 和 beta
         self.optimizer.update(self.gamma, dgamma)
@@ -274,8 +274,8 @@ class Pooling:
 
         # MaxPooling
         if self.pool_type == 0:
-            arg_max = np.argmax(col, axis=1)
-            out = np.max(col, axis=1)
+            arg_max = mypy.argmax(col, axis=1)
+            out = mypy.max(col, axis=1)
             out = out.reshape(N, out_h, out_w, C).transpose(0, 3, 1, 2) # out: N C out_h out_w
 
             self.x = x
@@ -297,8 +297,8 @@ class Pooling:
         dout = dout.transpose(0, 2, 3, 1)                                           # dout: N out_h out_w C
         
         pool_size = self.pool_h * self.pool_w
-        dmax = np.zeros((dout.size, pool_size))                                     # dmax: dout.size * pool_size
-        dmax[np.arange(self.arg_max.size), self.arg_max.flatten()] = dout.flatten() # dmax相应位置变为梯度
+        dmax = mypy.zeros((dout.size, pool_size))                                     # dmax: dout.size * pool_size
+        dmax[mypy.arange(self.arg_max.size), self.arg_max.flatten()] = dout.flatten() # dmax相应位置变为梯度
 
         # dmax = dmax.reshape(dout.shape + (pool_size,))                              # dmax: N out_h out_w C pool_size
         # dmax = dmax.reshape(dmax.shape[0] * dmax.shape[1] * dmax.shape[2], -1)      # dcol: N*out_h*out_w C*pool_size

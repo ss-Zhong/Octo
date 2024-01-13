@@ -16,9 +16,9 @@ def unpickle(file):
 
         data = data_dict[key]
         if isinstance(data, bytes):
-            data = numpy.frombuffer(data_dict[key], dtype=np.uint8)
+            data = numpy.frombuffer(data_dict[key], dtype=mypy.uint8)
         # hint(type(data), key)
-        data_dict[key] = np.array(data)
+        data_dict[key] = mypy.array(data)
 
     return data_dict
 
@@ -32,14 +32,14 @@ def getData(train=False):
                 data = batch[b'data']
                 labels = batch[b'labels']
             else:
-                data = np.concatenate([data, batch[b'data']])
-                labels = np.concatenate([labels, batch[b'labels']])
+                data = mypy.concatenate([data, batch[b'data']])
+                labels = mypy.concatenate([labels, batch[b'labels']])
 
     else:
         batch = unpickle(DatasetsDict + 'cifar-10-py/test_batch')
         data = batch[b'data']
         labels = batch[b'labels']
-    return np.array(data), np.array(labels)
+    return mypy.array(data), mypy.array(labels)
 
 
 """
@@ -54,8 +54,8 @@ def loadCIFAR10(normalize = True, flatten = False):
 
     if normalize:
         for key in ('train_img', 'test_img'):
-            cifar_mean = np.array([0.485,0.456,0.406])
-            cifar_std = np.array([0.229,0.224,0.225])
+            cifar_mean = mypy.array([0.485,0.456,0.406])
+            cifar_std = mypy.array([0.229,0.224,0.225])
             
             # dataset[key] = (dataset[key].astype('float32') / 255.0 - cifar_mean.reshape(1, 3, 1, 1)) / cifar_std.reshape(1, 3, 1, 1)
             dataset[key] = dataset[key].astype('float32') / 255.0

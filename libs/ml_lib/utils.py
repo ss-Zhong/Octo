@@ -6,8 +6,8 @@ def im2col(input_data, filter_h, filter_w, stride=1, pad=0):
     out_h = (H + 2*pad - filter_h)//stride + 1
     out_w = (W + 2*pad - filter_w)//stride + 1
 
-    img = np.pad(input_data, pad_width=[(0, 0), (0, 0), (pad, pad), (pad, pad)], mode='constant', constant_values=0)
-    col = np.zeros((N, C, filter_h, filter_w, out_h, out_w))
+    img = mypy.pad(input_data, pad_width=[(0, 0), (0, 0), (pad, pad), (pad, pad)], mode='constant', constant_values=0)
+    col = mypy.zeros((N, C, filter_h, filter_w, out_h, out_w))
 
     for y in range(filter_h):
         y_max = y + stride*out_h
@@ -28,7 +28,7 @@ def col2im(col, input_shape, filter_h, filter_w, stride=1, pad=0):
     # from (N, out_h, out_w, C, filter_h, filter_w) to (N, C, filter_h, filter_w, out_h, out_w)
     col = col.reshape(N, out_h, out_w, C, filter_h, filter_w).transpose(0, 3, 4, 5, 1, 2)
 
-    img = np.zeros((N, C, H + 2*pad + stride - 1, W + 2*pad + stride - 1))
+    img = mypy.zeros((N, C, H + 2*pad + stride - 1, W + 2*pad + stride - 1))
     for y in range(filter_h):
         y_max = y + stride*out_h
         for x in range(filter_w):

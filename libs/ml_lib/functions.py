@@ -3,12 +3,12 @@ from . import *
 def softmax(x):
     if x.ndim == 2:
         x = x.T
-        x = x - np.max(x, axis=0)
-        y = np.exp(x) / np.sum(np.exp(x), axis=0)
+        x = x - mypy.max(x, axis=0)
+        y = mypy.exp(x) / mypy.sum(mypy.exp(x), axis=0)
         return y.T 
 
-    x = x - np.max(x)
-    return np.exp(x) / np.sum(np.exp(x))
+    x = x - mypy.max(x)
+    return mypy.exp(x) / mypy.sum(mypy.exp(x))
 
 def cross_entropy_error(y, t):
     if y.ndim == 1:
@@ -19,4 +19,4 @@ def cross_entropy_error(y, t):
         t = t.argmax(axis=1)
              
     batch_size = y.shape[0]
-    return -np.sum(np.log(y[np.arange(batch_size), t] + 1e-7)) / batch_size
+    return -mypy.sum(mypy.log(y[mypy.arange(batch_size), t] + 1e-7)) / batch_size

@@ -6,8 +6,8 @@ import time
 
 def one_hot_encode(labels, num_classes):
     batch_size = len(labels)
-    one_hot_labels = np.zeros((batch_size, num_classes))
-    one_hot_labels[np.arange(batch_size), labels] = 1
+    one_hot_labels = mypy.zeros((batch_size, num_classes))
+    one_hot_labels[mypy.arange(batch_size), labels] = 1
     return one_hot_labels
 
 class Trainer:
@@ -37,7 +37,7 @@ class Trainer:
                 self.model.backward()
 
                 e = time.perf_counter()
-                print(f"epoch:{i},batch:{batch_index}", loss, "    ", e-s)
+                print(f"[E:{i}, B:{batch_index}, T:{format(e-s, '.4f')}s]\t", loss)
                 
                 # 记录实验数据
                 if batch_index < num_batches - 1 and self.csvWriter is not None:
@@ -60,7 +60,7 @@ class Trainer:
             batch_labels = self.test_labels[start_index:end_index]
 
             y = self.model.predict(batch_images)
-            y = np.argmax(y, axis=1)
-            acc += np.sum(y == batch_labels)
+            y = mypy.argmax(y, axis=1)
+            acc += mypy.sum(y == batch_labels)
         
         return acc / (len(self.test_images) - len(self.test_images) % batch_size)

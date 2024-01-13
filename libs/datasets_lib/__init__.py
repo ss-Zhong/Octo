@@ -1,5 +1,4 @@
-from libs import hint
-import cupy as np
+from .. import *
 
 DatasetsDict = 'F:/Datasets/'
 

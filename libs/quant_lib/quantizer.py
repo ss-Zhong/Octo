@@ -3,7 +3,7 @@ from . import *
 
 # 随机舍入round
 def round(M):
-    M_int = np.floor(M + np.random.random(M.shape))
+    M_int = mypy.floor(M + mypy.random.random(M.shape))
     # M_int = M_int.astype(int)
     return M_int
 
