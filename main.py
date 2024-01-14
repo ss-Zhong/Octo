@@ -13,7 +13,7 @@ train_mode = False
 date_time = datetime.now().strftime("%Y%m%d_%H%M")
 csvPath = 'result/data/' + date_time + '.csv'
 saveModelFile = 'result/model/' + date_time + '.pkl'
-loadModelFile = "result/model/20240114_1619.pkl"
+loadModelFile = "result/model/20240114_2135.pkl"
 # loadModelFile = None
 
 # train setting

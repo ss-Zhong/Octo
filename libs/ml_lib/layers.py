@@ -1,4 +1,3 @@
-from libs.ml_lib.optimizer import *
 from libs.ml_lib.utils import *
 from libs.ml_lib.functions import *
 from .. import matrix
@@ -68,14 +67,13 @@ class SoftmaxWithLoss:
 
 class Conv:
     def __init__(self, W, b,
-                 stride=1, pad=0, optimizer=SGD(),
+                 stride=1, pad=0,
                  quant_mode=QuantMode.FullPrecision):
         self.W = W
         self.b = b
 
         self.stride = stride
         self.pad = pad
-        self.optimizer = optimizer
 
         self.x = None   
         self.col = None

@@ -30,12 +30,28 @@ class VGG11:
     
     def backward(self):
         dout = self.softmax.backward()
-        gradient = {}
+        grads = {}
+        i = len(self.layers)
 
         for layer in reversed(self.layers):
+            # 反向传播
             dout = layer.backward(dout)
 
-        self.optimizer.update(self)
+            # 记录grads
+            i -= 1
+            if isinstance(layer, Conv):
+                grads['Conv_W_' + str(i)] = layer.dW
+                grads['Conv_b_' + str(i)] = layer.db
+
+            elif isinstance(layer, BatchNorm):
+                grads['BN_Gamma_' + str(i)] = layer.dgamma
+                grads['BN_Beta_' + str(i)] = layer.dbeta
+
+            elif isinstance(layer, FC):
+                grads['FC_W_' + str(i)] = layer.dW
+                grads['FC_b_' + str(i)] = layer.db
+
+        self.optimizer.update(self.params, grads)
 
         return dout
 
@@ -45,6 +61,7 @@ class VGG11:
 
         # 有预训练模型
         if file_name:
+            hint("=======        Load Params        =======")
             with open(file_name, 'rb') as f:
                 self.params = pickle.load(f)
 
@@ -55,25 +72,34 @@ class VGG11:
 
                 layers += [Conv(W=self.params['Conv_W_' + str(len(layers))],
                                 b=self.params['Conv_b_' + str(len(layers))],
-                                input_channel=input_channel, output_channel=l, 
-                                kernel_size=3, pad=1, 
+                                pad=1, 
                                 quant_mode=self.quant_mode)]
+
                 if batch_norm == True:
+                    # print('BN_running_mean_1', self.params['BN_running_mean_1'])
+                    # print('BN_running_var_1', self.params['BN_running_var_1'])
+                    # input()
                     layers += [BatchNorm(
                         gamma=self.params['BN_Gamma_' + str(len(layers))],
                         beta=self.params['BN_Beta_' + str(len(layers))],
-                        running_mean=mypy.zeros((1, l, 1, 1)),
-                        running_var=mypy.zeros((1, l, 1, 1))
+                        running_mean=self.params['BN_running_mean_' + str(len(layers))],
+                        running_var=self.params['BN_running_var_' + str(len(layers))],
+                        epsilon=self.params['BN_Epsilon_' + str(len(layers))]
                     )]
+
                 layers += [Relu()]
                 input_channel = l
 
             layers += [FC(self.params['FC_W_' + str(len(layers))], self.params['FC_b_' + str(len(layers))]), 
                        FC(self.params['FC_W_' + str(len(layers)+1)], self.params['FC_b_' + str(len(layers)+1)]),
                        FC(self.params['FC_W_' + str(len(layers)+2)], self.params['FC_b_' + str(len(layers)+2)])]
+            
+            hint("=======    Success Load Params    =======")
         
         # 无预训练模型
         else:
+            hint("=======        Init Params        =======")
+
             for l in cfg:
                 if l == 'M':
                     layers += [Pooling(2, 2)]
@@ -83,38 +109,44 @@ class VGG11:
                 self.params['Conv_b_' + str(len(layers))] = mypy.zeros(l, dtype=float)
                 layers += [Conv(W=self.params['Conv_W_' + str(len(layers))],
                                 b=self.params['Conv_b_' + str(len(layers))],
-                                optimizer=self.optimizer, 
                                 pad=1,
                                 quant_mode=self.quant_mode)]
                 if batch_norm == True:
                     self.params['BN_Gamma_' + str(len(layers))] = mypy.ones((1, l, 1, 1))
                     self.params['BN_Beta_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
+                    self.params['BN_running_mean_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
+                    self.params['BN_running_var_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
+                    self.params['BN_Epsilon_' + str(len(layers))] = 1e-5
                     layers += [BatchNorm(
                         gamma=self.params['BN_Gamma_' + str(len(layers))],
                         beta=self.params['BN_Beta_' + str(len(layers))],
-                        running_mean=mypy.zeros((1, l, 1, 1)),
-                        running_var=mypy.zeros((1, l, 1, 1))
+                        running_mean=self.params['BN_running_mean_' + str(len(layers))],
+                        running_var=self.params['BN_running_var_' + str(len(layers))],
+                        epsilon=self.params['BN_Epsilon_' + str(len(layers))]
                     )]
                 layers += [Relu()]
                 input_channel = l
-
-            layers += [FC(self.params['FC_W_' + str(len(layers))], self.params['FC_b_' + str(len(layers))]), 
-                       FC(self.params['FC_W_' + str(len(layers)+1)], self.params['FC_b_' + str(len(layers)+1)]),
-                       FC(self.params['FC_W_' + str(len(layers)+2)], self.params['FC_b_' + str(len(layers)+2)])]
             
             FC_channel = [512, 4096, 4096, class_num]
             for i in range(len(FC_channel) - 1):
                 FC_in = FC_channel[i]
                 FC_out = FC_channel[i+1]
-                self.params['FC_W_' + str(len(layers)+i)] = mypy.random.normal(loc=0, scale=mypy.sqrt(2 / FC_in), size=(FC_in, FC_out))
-                self.params['FC_b_' + str(len(layers)+i)] = mypy.zeros((1, FC_out))
-                layers += [FC(W=self.params['FC_W_' + str(len(layers)+i)], 
-                              b=self.params['FC_b_' + str(len(layers)+i)])]
+                self.params['FC_W_' + str(len(layers))] = mypy.random.normal(loc=0, scale=mypy.sqrt(2 / FC_in), size=(FC_in, FC_out))
+                self.params['FC_b_' + str(len(layers))] = mypy.zeros((1, FC_out))
+                layers += [FC(W=self.params['FC_W_' + str(len(layers))], 
+                              b=self.params['FC_b_' + str(len(layers))])]
+                
+            hint("=======    Success Init Params    =======")
         
         return layers
     
     def save_params(self, file_name="result/model/vgg11.pkl"):
         hint("=======        Save Params        =======")
+
+        for i, layer in enumerate(self.layers):
+            if isinstance(layer, BatchNorm):
+                self.params['BN_running_mean_' + str(i)] = layer.running_mean
+                self.params['BN_running_var_' + str(i)] = layer.running_var
 
         with open(file_name, 'wb') as f:
             pickle.dump(self.params, f)
