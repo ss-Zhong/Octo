@@ -13,11 +13,12 @@ def unpickle(file):
     for key in data_dict:
         if key != b'labels' and key != b'data':
             continue
-
+        
         data = data_dict[key]
-        if isinstance(data, bytes):
+
+        if 'cupy' in str(type(mypy)) and isinstance(data, bytes):
             data = numpy.frombuffer(data_dict[key], dtype=mypy.uint8)
-        # hint(type(data), key)
+
         data_dict[key] = mypy.array(data)
 
     return data_dict
@@ -57,8 +58,8 @@ def loadCIFAR10(normalize = True, flatten = False):
             cifar_mean = mypy.array([0.485,0.456,0.406])
             cifar_std = mypy.array([0.229,0.224,0.225])
             
-            # dataset[key] = (dataset[key].astype('float32') / 255.0 - cifar_mean.reshape(1, 3, 1, 1)) / cifar_std.reshape(1, 3, 1, 1)
-            dataset[key] = dataset[key].astype('float32') / 255.0
+            dataset[key] = (dataset[key].astype('float32') / 255.0 - cifar_mean.reshape(1, 3, 1, 1)) / cifar_std.reshape(1, 3, 1, 1)
+            # dataset[key] = dataset[key].astype('float32') / 255.0
                             
     if not flatten:
         for key in ('train_img', 'test_img'):

@@ -10,6 +10,6 @@ try:
     hint("[GPU Mode]")
 except ImportError:
     import numpy as mypy
-    print("[CPU Mode]")
+    hint("[CPU Mode]")
 
 hint("=======        Lib Loading        =======")

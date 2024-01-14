@@ -92,6 +92,9 @@ class Conv:
         self.quantizer = ConvQuantizer(num_bits=8)
         self.quant_mode = quant_mode
 
+        self.dW = None
+        self.db = None
+
     def forward(self, x):
         N_W, _, H_W, W_W = self.W.shape
         N, _, H, W = x.shape
