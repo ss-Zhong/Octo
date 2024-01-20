@@ -42,6 +42,12 @@ def getData(train=False):
         labels = batch[b'labels']
     return mypy.array(data), mypy.array(labels)
 
+def horizontal_flip(images):
+    batch_size, _, _, _ = images.shape
+    flip_mask = mypy.random.random(size=batch_size) < 0.5
+    images[flip_mask] = images[flip_mask, :, :, ::-1]
+
+    return images
 
 """
 加载cifar10数据集函数
@@ -57,12 +63,14 @@ def loadCIFAR10(normalize = True, flatten = False):
         for key in ('train_img', 'test_img'):
             cifar_mean = mypy.array([0.485,0.456,0.406])
             cifar_std = mypy.array([0.229,0.224,0.225])
-            
+
             dataset[key] = (dataset[key].astype('float32') / 255.0 - cifar_mean.reshape(1, 3, 1, 1)) / cifar_std.reshape(1, 3, 1, 1)
             # dataset[key] = dataset[key].astype('float32') / 255.0
                             
     if not flatten:
         for key in ('train_img', 'test_img'):
             dataset[key] = dataset[key].reshape(-1, 3, 32, 32)
+
+        horizontal_flip(dataset['train_img'])
     
     return (dataset['train_img'], dataset['train_label']), (dataset['test_img'], dataset['test_label'])

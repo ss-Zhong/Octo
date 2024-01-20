@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import csv
 
-csvPath = 'exp_result/saved/20240113_2156.csv'
+csvPath = 'result/data/saved/20240115_1139.csv'
 
 # 从CSV文件中读取Loss和Accuracy数据
 losses = []
@@ -12,7 +12,7 @@ with open(csvPath, 'r') as file:
     
     for row in csv_reader:
         # 将Loss和Accuracy数据添加到列表中
-        if row['Epoch'] != '0':
+        if row['Epoch'] != '0' and row['Loss'] != '':
             losses.append(float(row['Loss']))
         if row['Accuracy']:
             accuracies.append(float(row['Accuracy']))

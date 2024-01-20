@@ -20,8 +20,6 @@ class Relu:
     def backward(self, dout):
         dx = dout
         dx[self.mask] = 0
-        # print(dx, '\nrelu')
-        # input()
         return dx
     
 
@@ -158,19 +156,21 @@ class FC:
         self.W = W
         self.b = b
         self.x = None
+        self.xshape = None
         
         self.dW = None
         self.db = None
 
     def forward(self, x):
-        self.x = mypy.squeeze(x)
+        self.xshape = x.shape
+        self.x = x.reshape(x.shape[0], -1)
         out = mypy.dot(self.x, self.W) + self.b
         return out
 
     def backward(self, dout):
         self.dW = mypy.dot(self.x.T, dout)
         self.db = mypy.sum(dout, axis=0, keepdims=True)
-        dx = mypy.dot(dout, self.W.T)
+        dx = mypy.dot(dout, self.W.T).reshape(self.xshape)
 
         return dx
     
@@ -224,8 +224,24 @@ class BatchNorm:
         return dx
 
 
+class Dropout:
+    def __init__(self, dropout_ratio=0.5):
+        self.dropout_ratio = dropout_ratio
+        self.mask = None
+
+    def forward(self, x, train_mode=True):
+        if train_mode:
+            self.mask = mypy.random.binomial(n=1, p=self.dropout_ratio, size=x.shape)
+            return x * self.mask
+        else:
+            return x * (1.0 - self.dropout_ratio)
+
+    def backward(self, dout):
+        return dout * self.mask
+
+
 class Pooling:
-    def __init__(self, pool_w, pool_h, stride = None, pad = 0, pool_type = 0):
+    def __init__(self, pool_w, pool_h, stride = None, pad = 0, pool_type = 'Max'):
         self.pool_h = pool_h
         self.pool_w = pool_w
         self.stride = stride if stride else pool_w
@@ -253,7 +269,7 @@ class Pooling:
         out = None
 
         # MaxPooling
-        if self.pool_type == 0:
+        if self.pool_type == 'Max':
             arg_max = mypy.argmax(col, axis=1)
             out = mypy.max(col, axis=1)
             out = out.reshape(N, out_h, out_w, C).transpose(0, 3, 1, 2) # out: N C out_h out_w
@@ -262,12 +278,12 @@ class Pooling:
             self.arg_max = arg_max
         
         # AvgPooling
-        elif self.pool_type == 1:
+        elif self.pool_type == 'Avg':
             hint("AvgPooling unfinished")
             pass
 
         else:
-            print("[ERROR] NoneType of Pooling")
+            hint("[ERROR] NoneType of Pooling")
 
         return out
     
@@ -285,3 +301,55 @@ class Pooling:
         dx = col2im(dmax, self.x.shape, self.pool_h, self.pool_w, self.stride, self.pad)
         
         return dx
+
+
+class Compensation:
+    def __init__(self, alpha, mu, beta, clipping=False):
+        self.alpha = alpha
+        self.mu = mu
+        self.beta = beta
+        self.clipping = clipping
+
+        self.d_alpha = None
+        self.d_mu = None
+        self.d_beta = None
+
+        self.clip_max = None
+        self.clip_min = None
+        self.out = None
+
+    def parametrized_range_clipping(self, tensor, z=2.576):
+        n = tensor.size
+        if n == 0:
+            return tensor
+
+        self.clip_max = 0.95 * mypy.max(tensor)
+        self.clip_min = 0.95 * mypy.min(tensor)
+
+        return mypy.clip(tensor, self.clip_min, self.clip_max)
+
+    def forward(self, x):
+        out = x + self.alpha * self.mu + self.beta
+        self.out = out
+
+        if self.clipping:
+            out = self.parametrized_range_clipping(out)
+
+        return out
+
+    def backward(self, dout):
+        if self.clipping:
+            dout_clip_mask = self.out
+            with mypy.nditer(dout_clip_mask, op_flags=['readwrite']) as it:
+                for x in it:
+                    if x > self.clip_max or x < self.clip_min:
+                        x[...] = 0.0
+                    else:
+                        x[...] = 1.0
+            dout *= dout_clip_mask
+
+        self.d_alpha = mypy.sum(dout * self.mu, axis=0)
+        self.d_mu = self.alpha * dout
+        self.d_beta = dout
+
+        return dout

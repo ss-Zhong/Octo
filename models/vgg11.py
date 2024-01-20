@@ -3,30 +3,39 @@ import pickle
 
 cfg = [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M']
 
+# cfg = [64, 128, 256, 256, 'M', 512, 512, 512, 512]
+
 class VGG11:
-    def __init__(self, optimizer, quant_mode=QuantMode.FullPrecision, class_num=10, load_file = None):
+    def __init__(self, optimizer, quant_mode=QuantMode.FullPrecision, input_dim = [3, 32], class_num=10, load_file = None, lac = False, prc = False, fc1w = 4):
         self.optimizer = optimizer
         self.quant_mode = quant_mode
         self.params = {}
-        self.layers = self.make_layers(cfg, input_channel = 3, batch_norm=True, class_num = class_num, file_name = load_file)
+        self.layers = self.make_layers(cfg, input_dim = input_dim, batch_norm=True, class_num=class_num, file_name=load_file, lac=lac, fc1w=fc1w)
         self.softmax = SoftmaxWithLoss()
 
-    def predict(self, x):
+        # self.FC_channel = [512, 4096, 1000, class_num]
+
+    def predict(self, x, t = None):
         for layer in self.layers:
-            if isinstance(layer, BatchNorm):
+            if isinstance(layer, BatchNorm) or isinstance(layer, Dropout):
                 x = layer.forward(x, False)
             else:
                 x = layer.forward(x)
 
-        res, _ = self.softmax.forward(x)
-        return res
+        res, loss = self.softmax.forward(x, t)
+        return res, loss
         
     def forward(self, x, t):
         for layer in self.layers:
             x = layer.forward(x)
 
-        _, loss = self.softmax.forward(x, t)
-        return loss
+        res, loss = self.softmax.forward(x, t)
+
+        res = mypy.argmax(res, axis=1)
+        t = mypy.argmax(t, axis=1)
+        acc = mypy.sum(res == t)
+
+        return acc, loss
     
     def backward(self):
         dout = self.softmax.backward()
@@ -55,92 +64,87 @@ class VGG11:
 
         return dout
 
-    # batch_norm 从一个隐藏层获取输出并在将它们作为下一个隐藏层的输入传递之前对其进行"标准化"
-    def make_layers(self, cfg, batch_norm=False, input_channel = 3, class_num = 10, file_name = None):
+    
+    def make_layers(self, cfg, batch_norm=False, input_dim = [3, 32], class_num = 10, file_name = None, lac = False, fc1w = 4):
         layers = []
+        make_way = 'Init'
 
-        # 有预训练模型
+        # 有预训练模型，则加载预训练模型
         if file_name:
-            hint("=======        Load Params        =======")
+            make_way = 'Load'
             with open(file_name, 'rb') as f:
                 self.params = pickle.load(f)
 
-            for l in cfg:
-                if l == 'M':
-                    layers += [Pooling(2, 2)]
-                    continue
+        hint(f"=======        {make_way} Params        =======")
 
-                layers += [Conv(W=self.params['Conv_W_' + str(len(layers))],
-                                b=self.params['Conv_b_' + str(len(layers))],
-                                pad=1, 
-                                quant_mode=self.quant_mode)]
+        for l in cfg:
+            if l == 'M':
+                layers += [Pooling(2, 2)]
+                input_dim[1] /= 2
+                continue
 
-                if batch_norm == True:
-                    # print('BN_running_mean_1', self.params['BN_running_mean_1'])
-                    # print('BN_running_var_1', self.params['BN_running_var_1'])
-                    # input()
-                    layers += [BatchNorm(
-                        gamma=self.params['BN_Gamma_' + str(len(layers))],
-                        beta=self.params['BN_Beta_' + str(len(layers))],
-                        running_mean=self.params['BN_running_mean_' + str(len(layers))],
-                        running_var=self.params['BN_running_var_' + str(len(layers))],
-                        epsilon=self.params['BN_Epsilon_' + str(len(layers))]
-                    )]
-
-                layers += [Relu()]
-                input_channel = l
-
-            layers += [FC(self.params['FC_W_' + str(len(layers))], self.params['FC_b_' + str(len(layers))]), 
-                       FC(self.params['FC_W_' + str(len(layers)+1)], self.params['FC_b_' + str(len(layers)+1)]),
-                       FC(self.params['FC_W_' + str(len(layers)+2)], self.params['FC_b_' + str(len(layers)+2)])]
-            
-            hint("=======    Success Load Params    =======")
-        
-        # 无预训练模型
-        else:
-            hint("=======        Init Params        =======")
-
-            for l in cfg:
-                if l == 'M':
-                    layers += [Pooling(2, 2)]
-                    continue
-
-                self.params['Conv_W_' + str(len(layers))] = mypy.random.normal(loc=0, scale=0.01, size=(l, input_channel, 3, 3))
+            # 卷积层
+            if file_name is None:
+                self.params['Conv_W_' + str(len(layers))] = mypy.random.normal(loc=0, scale=0.01, size=(l, input_dim[0], 3, 3))
                 self.params['Conv_b_' + str(len(layers))] = mypy.zeros(l, dtype=float)
-                layers += [Conv(W=self.params['Conv_W_' + str(len(layers))],
-                                b=self.params['Conv_b_' + str(len(layers))],
-                                pad=1,
-                                quant_mode=self.quant_mode)]
-                if batch_norm == True:
+            layers += [Conv(W=self.params['Conv_W_' + str(len(layers))],
+                            b=self.params['Conv_b_' + str(len(layers))],
+                            pad=1,
+                            quant_mode=self.quant_mode)]
+            
+            # if lac:
+            #     if file_name is None:
+            #         self.params['LAC_Alpha_' + str(len(layers))] = mypy.random.normal(loc=0, scale=0.01, size=(l, input_dim[0], 3, 3))
+            #         self.params['LAC_Mu_' + str(len(layers))] = mypy.zeros(l, dtype=float)
+            #         self.params['LAC_Beta_' + str(len(layers))] = mypy.zeros(l, dtype=float)
+            #     layers += [Compensation()]
+
+            
+            if batch_norm == True:
+                if file_name is None:
                     self.params['BN_Gamma_' + str(len(layers))] = mypy.ones((1, l, 1, 1))
                     self.params['BN_Beta_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
                     self.params['BN_running_mean_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
                     self.params['BN_running_var_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
                     self.params['BN_Epsilon_' + str(len(layers))] = 1e-5
-                    layers += [BatchNorm(
-                        gamma=self.params['BN_Gamma_' + str(len(layers))],
-                        beta=self.params['BN_Beta_' + str(len(layers))],
-                        running_mean=self.params['BN_running_mean_' + str(len(layers))],
-                        running_var=self.params['BN_running_var_' + str(len(layers))],
-                        epsilon=self.params['BN_Epsilon_' + str(len(layers))]
-                    )]
-                layers += [Relu()]
-                input_channel = l
+                
+                layers += [BatchNorm(
+                    gamma=self.params['BN_Gamma_' + str(len(layers))],
+                    beta=self.params['BN_Beta_' + str(len(layers))],
+                    running_mean=self.params['BN_running_mean_' + str(len(layers))],
+                    running_var=self.params['BN_running_var_' + str(len(layers))],
+                    epsilon=self.params['BN_Epsilon_' + str(len(layers))]
+                )]
             
-            FC_channel = [512, 4096, 4096, class_num]
+            layers += [Relu()]
+            input_dim[0] = l
+ 
+        # 全连接层
+        if file_name:
+            layers += [FC(self.params['FC_W_' + str(len(layers))], self.params['FC_b_' + str(len(layers))]),
+                       Relu(), Dropout(0.5),
+                       FC(self.params['FC_W_' + str(len(layers)+3)], self.params['FC_b_' + str(len(layers)+3)]),
+                       Relu(), Dropout(0.5),
+                       FC(self.params['FC_W_' + str(len(layers)+6)], self.params['FC_b_' + str(len(layers)+6)])]
+
+        else:
+            FC_channel = [512 * fc1w * fc1w, 4096, 1000, class_num]
             for i in range(len(FC_channel) - 1):
-                FC_in = FC_channel[i]
+                FC_in = int(FC_channel[i])
                 FC_out = FC_channel[i+1]
                 self.params['FC_W_' + str(len(layers))] = mypy.random.normal(loc=0, scale=mypy.sqrt(2 / FC_in), size=(FC_in, FC_out))
                 self.params['FC_b_' + str(len(layers))] = mypy.zeros((1, FC_out))
                 layers += [FC(W=self.params['FC_W_' + str(len(layers))], 
-                              b=self.params['FC_b_' + str(len(layers))])]
+                                b=self.params['FC_b_' + str(len(layers))])]
                 
-            hint("=======    Success Init Params    =======")
-        
-        return layers
+                if i < 2:
+                    layers += [Relu(), Dropout(0.5)]
+            
+        hint(f"=======    Success {make_way} Params    =======")
     
-    def save_params(self, file_name="result/model/vgg11.pkl"):
+        return layers
+
+    def save_params(self, file_name = None):
         hint("=======        Save Params        =======")
 
         for i, layer in enumerate(self.layers):
