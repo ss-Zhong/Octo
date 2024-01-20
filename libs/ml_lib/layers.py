@@ -1,10 +1,10 @@
-import numpy as np
 from libs.ml_lib.utils import *
-from libs.ml_lib.optimizer import *
 from libs.ml_lib.functions import *
+from .. import matrix
 from ..quant_lib.quantMode import QuantMode
 from ..quant_lib.quantizer import ConvQuantizer
-from . import hint
+from . import *
+import time
 
 
 class Relu:
@@ -20,8 +20,6 @@ class Relu:
     def backward(self, dout):
         dx = dout
         dx[self.mask] = 0
-        # print(dx, '\nrelu')
-        # input()
         return dx
     
 
@@ -30,7 +28,7 @@ class Sigmoid:
         self.out = None
 
     def forward(self, x):
-        out = 1 / (1 + np.exp(-x))
+        out = 1 / (1 + mypy.exp(-x))
         self.out = out
         return out
 
@@ -59,169 +57,191 @@ class SoftmaxWithLoss:
             dx = (self.y - self.t) / batch_size
         else:
             dx = self.y.copy()
-            dx[np.arange(batch_size), self.t] -= 1
+            dx[mypy.arange(batch_size), self.t] -= 1
             dx = dx / batch_size
         
         return dx
 
 
 class Conv:
-    def __init__(self, W = None, b = None,
-                 input_channel = None, output_channel = None, kernel_size=3,
-                 stride=1, pad=0, optimizer=SGD(),
+    def __init__(self, W, b,
+                 stride=1, pad=0,
                  quant_mode=QuantMode.FullPrecision):
-        if W and b: 
-            self.W = W
-            self.b = b
-        elif input_channel and output_channel: 
-            # self.W = self.initialize_weights(output_channel, input_channel, kernel_size)
-            self.W = np.zeros([output_channel, input_channel, kernel_size, kernel_size], dtype=float)
-            self.b = np.zeros(output_channel, dtype=float)
-        else:
-            print("卷积核未初始化")
+        self.W = W
+        self.b = b
 
         self.stride = stride
         self.pad = pad
-        self.optimizer = optimizer
 
         self.x = None   
         self.col = None
         self.col_W = None
 
-        self.quantizer = ConvQuantizer()
+        self.quantizer = ConvQuantizer(num_bits=8)
         self.quant_mode = quant_mode
-    
-    def initialize_weights(self, output_channel, input_channel, kernel_size):
-        n_in = input_channel * kernel_size * kernel_size
-        n_out = output_channel * kernel_size * kernel_size
-        a = np.sqrt(6 / (n_in + n_out))
-        return np.random.uniform(low=-a, high=a, size=(output_channel, input_channel, kernel_size, kernel_size))
+
+        self.dW = None
+        self.db = None
 
     def forward(self, x):
+        N_W, _, H_W, W_W = self.W.shape
+        N, _, H, W = x.shape
+
+        out_h = (H + 2*self.pad - H_W)//self.stride + 1
+        out_w = (W + 2*self.pad - W_W)//self.stride + 1
+
         # 全精度，不进行量化
         if self.quant_mode == QuantMode.FullPrecision:
-            N_W, _, H_W, W_W = self.W.shape
-            N, _, H, W = x.shape
-
-            out_h = (H + 2*self.pad - H_W)//self.stride + 1
-            out_w = (W + 2*self.pad - W_W)//self.stride + 1
-
             col = im2col(x, H_W, W_W, self.stride, self.pad)                # col: N*out_h*out_w, C*H_W*W_W
             col_W = self.W.reshape(N_W, -1).T                               # col_W: C*H_W*W_W, N_W
 
-            out = np.dot(col, col_W) + self.b                               # out: N*out_h*out_w, N_W b: N_W
+            out = mypy.dot(col, col_W) + self.b                               # out: N*out_h*out_w, N_W b: N_W
             out = out.reshape(N, out_h, out_w, -1).transpose(0, 3, 1, 2)    # out: N, N_W, out_h, out_w
 
             self.x = x
             self.col = col
             self.col_W = col_W
 
-            return out
+        # 对称量化
+        elif self.quant_mode == QuantMode.SymmQuantization:
+            x_int8 = self.quantizer.quantizeXSymm(x)
+            W_int8 = self.quantizer.quantizeWSymm(self.W)
 
-        elif self.quant_mode == QuantMode.Quantization:
-            pass
+            col_int8 = im2col(x_int8, H_W, W_W, self.stride, self.pad)
+            col_W_int8 = W_int8.reshape(N_W, -1).T
 
-    def backward(self, dout):
-        # 全精度，不进行量化
-        if self.quant_mode == QuantMode.FullPrecision:
-            N_W, C, H_W, W_W = self.W.shape
+            # 调用pybind+Eigen
+            out_int8 = mypy.dot(col_int8, col_W_int8) #
+            out = self.quantizer.dequantizeY(out_int8) + self.b
+            out = out.reshape(N, out_h, out_w, -1).transpose(0, 3, 1, 2)
 
-            # dout: (N, N_W, out_h, out_w) -> (N*out_h*out_w, N_W)
-            dout = dout.transpose(0, 2, 3, 1).reshape(-1, N_W)
+            self.x = self.quantizer.dequantizeX(x_int8)
+            # 优化??????
+            self.col = self.quantizer.dequantizeX(col_int8)
+            self.col_W = self.quantizer.dequantizeW(col_W_int8)
 
-            db = np.sum(dout, axis=0)
-            dW = np.dot(dout.T, self.col).reshape(N_W, C, H_W, W_W)
-            # print(dW)
-            # input()
-
-            # self.b -= self.lr * db
-            # self.W -= self.lr * dW
-            self.optimizer.update(self.W, dW)
-            self.optimizer.update(self.b, db)
-
-            dcol = np.dot(dout, self.col_W.T)
-            dx = col2im(dcol, self.x.shape, H_W, W_W, self.stride, self.pad)
-
-            return dx
-
-
-class FC:
-    def __init__(self, input_channel, output_channel, optimizer=SGD()):
-        self.W = self.initialize_weights(input_channel, output_channel)
-        self.b = np.zeros((1, output_channel))
-        self.optimizer = optimizer
-
-        self.x = None
-
-    def initialize_weights(self, input_channel, output_channel):
-        a = np.sqrt(2 / input_channel)
-        return np.random.normal(loc=0, scale=a, size=(input_channel, output_channel))
-
-    def forward(self, x):
-        self.x = np.squeeze(x)
-        out = np.dot(self.x, self.W) + self.b
         return out
 
     def backward(self, dout):
-        dW = np.dot(self.x.T, dout)
-        db = np.sum(dout, axis=0, keepdims=True)
-        dx = np.dot(dout, self.W.T)
+        N_W, C, H_W, W_W = self.W.shape
+        # dout: (N, N_W, out_h, out_w) -> (N*out_h*out_w, N_W)
+        dout = dout.transpose(0, 2, 3, 1).reshape(-1, N_W)
+        self.db = mypy.sum(dout, axis=0)
 
-        self.optimizer.update(self.W, dW)
-        self.optimizer.update(self.b, db)
+        # 全精度，不进行量化
+        if self.quant_mode == QuantMode.FullPrecision:
+            self.dW = mypy.dot(dout.T, self.col).reshape(N_W, C, H_W, W_W)
+
+            dcol = mypy.dot(dout, self.col_W.T)
+            dx = col2im(dcol, self.x.shape, H_W, W_W, self.stride, self.pad)
+        
+        # 对称量化
+        elif self.quant_mode == QuantMode.SymmQuantization:
+            col_int8 = self.quantizer.quantizeXSymm(self.col)
+            col_W_int8 = self.quantizer.quantizeWSymm(self.col_W)
+            dout_int8 = self.quantizer.quantizeDOUTSymm(dout)
+
+            dW_int = mypy.dot(dout_int8.T, col_int8).reshape(N_W, C, H_W, W_W) #
+            self.dW = self.quantizer.dequantize_dW(dW_int)
+
+            dcol_int = mypy.dot(dout_int8, col_W_int8.T) #
+            dcol_q = self.quantizer.dequantize_dcol(dcol_int)
+            dx = col2im(dcol_q, self.x.shape, H_W, W_W, self.stride, self.pad)
 
         return dx
 
 
-class BatchNorm:
-    def __init__(self, input_size, optimizer, epsilon=1e-5, momentum=0.9):
-        self.epsilon = epsilon
-        self.momentum = momentum
-        self.input_size = input_size
-        self.gamma = np.ones((1, input_size, 1, 1))  # 初始化为1
-        self.beta = np.zeros((1, input_size, 1, 1))  # 初始化为0
-        self.running_mean = np.zeros((1, input_size, 1, 1))
-        self.running_var = np.zeros((1, input_size, 1, 1))
+class FC:
+    def __init__(self, W, b):
+        self.W = W
+        self.b = b
+        self.x = None
+        self.xshape = None
+        
+        self.dW = None
+        self.db = None
 
-        self.optimizer = optimizer
+    def forward(self, x):
+        self.xshape = x.shape
+        self.x = x.reshape(x.shape[0], -1)
+        out = mypy.dot(self.x, self.W) + self.b
+        return out
+
+    def backward(self, dout):
+        self.dW = mypy.dot(self.x.T, dout)
+        self.db = mypy.sum(dout, axis=0, keepdims=True)
+        dx = mypy.dot(dout, self.W.T).reshape(self.xshape)
+
+        return dx
+    
+
+class BatchNorm:
+    def __init__(self, gamma, beta, running_mean, running_var, epsilon=1e-5, momentum=0.9):
+        self.momentum = momentum
+        self.gamma = gamma
+        self.beta = beta
+        self.running_mean = running_mean
+        self.running_var = running_var
+        self.epsilon = epsilon
+
+        self.x = None
+        self.mean = None
+        self.var = None
+        self.x_normalized = None
+
+        self.dgamma = None
+        self.dbeta = None
 
     def forward(self, x, train_mode = True):
-        print(train_mode)
+        self.x = x
         if train_mode:
-            mean = np.mean(x, axis=0)
-            var = np.var(x, axis=0)
-            x_normalized = (x - mean) / np.sqrt(var + self.epsilon)
-            out = self.gamma * x_normalized + self.beta
+            self.mean = mypy.mean(x, axis=0)
+            self.var = mypy.var(x, axis=0)
+            self.x_normalized = (x - self.mean) / mypy.sqrt(self.var + self.epsilon)
+            out = self.gamma * self.x_normalized + self.beta
 
             # 更新 running mean 和 running var
-            self.running_mean = self.momentum * self.running_mean + (1 - self.momentum) * mean
-            self.running_var = self.momentum * self.running_var + (1 - self.momentum) * var
+            self.running_mean = self.momentum * self.running_mean + (1 - self.momentum) * self.mean
+            self.running_var = self.momentum * self.running_var + (1 - self.momentum) * self.var
         else:
-            x_normalized = (x - self.running_mean) / np.sqrt(self.running_var + self.epsilon)
-            out = self.gamma * x_normalized + self.beta
+            self.x_normalized = (x - self.running_mean) / mypy.sqrt(self.running_var + self.epsilon)
+            out = self.gamma * self.x_normalized + self.beta
 
         return out
 
     def backward(self, dout):
         batch_size = dout.shape[0]
 
+        # 计算梯度
+        self.dgamma = mypy.sum(dout * self.x_normalized, axis=(0, 2, 3), keepdims=True)
+        self.dbeta = mypy.sum(dout, axis=(0, 2, 3), keepdims=True)
         dx_normalized = dout * self.gamma
-        dvar = np.sum(dx_normalized * (self.x - self.mean) * -0.5 * (self.var + self.epsilon) ** (-1.5), axis=0)
-        dmean = np.sum(dx_normalized * -1 / np.sqrt(self.var + self.epsilon), axis=0) + dvar * np.sum(-2 * (self.x - self.mean), axis=0) / batch_size
-        dx = dx_normalized / np.sqrt(self.var + self.epsilon) + dvar * 2 * (self.x - self.mean) / batch_size + dmean / batch_size
 
-        dgamma = np.sum(dout * self.x_normalized, axis=0)
-        dbeta = np.sum(dout, axis=0)
-
-        # 更新 gamma 和 beta
-        self.optimizer.update(self.gamma, dgamma)
-        self.optimizer.update(self.beta, dbeta)
+        dvar = mypy.sum(dx_normalized * (self.x - self.mean) * -0.5 * (self.var + self.epsilon) ** (-1.5), axis=0)
+        dmean = mypy.sum(dx_normalized * -1 / mypy.sqrt(self.var + self.epsilon), axis=0) + dvar * mypy.sum(-2 * (self.x - self.mean), axis=0) / batch_size
+        dx = dx_normalized / mypy.sqrt(self.var + self.epsilon) + dvar * 2 * (self.x - self.mean) / batch_size + dmean / batch_size
 
         return dx
 
 
+class Dropout:
+    def __init__(self, dropout_ratio=0.5):
+        self.dropout_ratio = dropout_ratio
+        self.mask = None
+
+    def forward(self, x, train_mode=True):
+        if train_mode:
+            self.mask = mypy.random.binomial(n=1, p=self.dropout_ratio, size=x.shape)
+            return x * self.mask
+        else:
+            return x * (1.0 - self.dropout_ratio)
+
+    def backward(self, dout):
+        return dout * self.mask
+
+
 class Pooling:
-    def __init__(self, pool_w, pool_h, stride = None, pad = 0, pool_type = 0):
+    def __init__(self, pool_w, pool_h, stride = None, pad = 0, pool_type = 'Max'):
         self.pool_h = pool_h
         self.pool_w = pool_w
         self.stride = stride if stride else pool_w
@@ -249,21 +269,21 @@ class Pooling:
         out = None
 
         # MaxPooling
-        if self.pool_type == 0:
-            arg_max = np.argmax(col, axis=1)
-            out = np.max(col, axis=1)
+        if self.pool_type == 'Max':
+            arg_max = mypy.argmax(col, axis=1)
+            out = mypy.max(col, axis=1)
             out = out.reshape(N, out_h, out_w, C).transpose(0, 3, 1, 2) # out: N C out_h out_w
 
             self.x = x
             self.arg_max = arg_max
         
         # AvgPooling
-        elif self.pool_type == 1:
+        elif self.pool_type == 'Avg':
             hint("AvgPooling unfinished")
             pass
 
         else:
-            print("[ERROR] NoneType of Pooling")
+            hint("[ERROR] NoneType of Pooling")
 
         return out
     
@@ -273,11 +293,63 @@ class Pooling:
         dout = dout.transpose(0, 2, 3, 1)                                           # dout: N out_h out_w C
         
         pool_size = self.pool_h * self.pool_w
-        dmax = np.zeros((dout.size, pool_size))                                     # dmax: dout.size * pool_size
-        dmax[np.arange(self.arg_max.size), self.arg_max.flatten()] = dout.flatten() # dmax相应位置变为梯度
+        dmax = mypy.zeros((dout.size, pool_size))                                     # dmax: dout.size * pool_size
+        dmax[mypy.arange(self.arg_max.size), self.arg_max.flatten()] = dout.flatten() # dmax相应位置变为梯度
 
         # dmax = dmax.reshape(dout.shape + (pool_size,))                              # dmax: N out_h out_w C pool_size
         # dmax = dmax.reshape(dmax.shape[0] * dmax.shape[1] * dmax.shape[2], -1)      # dcol: N*out_h*out_w C*pool_size
         dx = col2im(dmax, self.x.shape, self.pool_h, self.pool_w, self.stride, self.pad)
         
         return dx
+
+
+class Compensation:
+    def __init__(self, alpha, mu, beta, clipping=False):
+        self.alpha = alpha
+        self.mu = mu
+        self.beta = beta
+        self.clipping = clipping
+
+        self.d_alpha = None
+        self.d_mu = None
+        self.d_beta = None
+
+        self.clip_max = None
+        self.clip_min = None
+        self.out = None
+
+    def parametrized_range_clipping(self, tensor, z=2.576):
+        n = tensor.size
+        if n == 0:
+            return tensor
+
+        self.clip_max = 0.95 * mypy.max(tensor)
+        self.clip_min = 0.95 * mypy.min(tensor)
+
+        return mypy.clip(tensor, self.clip_min, self.clip_max)
+
+    def forward(self, x):
+        out = x + self.alpha * self.mu + self.beta
+        self.out = out
+
+        if self.clipping:
+            out = self.parametrized_range_clipping(out)
+
+        return out
+
+    def backward(self, dout):
+        if self.clipping:
+            dout_clip_mask = self.out
+            with mypy.nditer(dout_clip_mask, op_flags=['readwrite']) as it:
+                for x in it:
+                    if x > self.clip_max or x < self.clip_min:
+                        x[...] = 0.0
+                    else:
+                        x[...] = 1.0
+            dout *= dout_clip_mask
+
+        self.d_alpha = mypy.sum(dout * self.mu, axis=0)
+        self.d_mu = self.alpha * dout
+        self.d_beta = dout
+
+        return dout

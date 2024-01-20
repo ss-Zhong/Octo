@@ -1,4 +1,4 @@
-from libs import hint
+from .. import *
 
 DatasetsDict = 'F:/Datasets/'
 
