@@ -1,16 +1,12 @@
 from libs.ml_lib.layers import *
 import pickle
-import time
 
 """
-    [Vgg11]
+    [AlexNet]
 
     Conv - (LAC) - BatchNorm - Relu - Pooling
     Conv - (LAC) - BatchNorm - Relu - Pooling
     Conv - (LAC) - BatchNorm - Relu
-    Conv - (LAC) - BatchNorm - Relu - Pooling
-    Conv - (LAC) - BatchNorm - Relu
-    Conv - (LAC) - BatchNorm - Relu - Pooling
     Conv - (LAC) - BatchNorm - Relu
     Conv - (LAC) - BatchNorm - Relu - Pooling
     FC - Relu - Dropout
@@ -18,9 +14,9 @@ import time
     FC
     Softmax
 """
-cfg = [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M']
+cfg = [32, 'M', 64, 'M', 128, 256, 256, 'M']
 
-class VGG11:
+class AlexNet:
     def __init__(self, optimizer, quant_mode=QuantMode.FullPrecision, input_dim = [3, 32], batch_norm = True, class_num=10, load_file = None, lac = False, prc = False):
         self.optimizer = optimizer
         self.quant_mode = quant_mode
@@ -38,14 +34,16 @@ class VGG11:
         res, loss = self.softmax.forward(x, t)
         return res, loss
         
-    def forward(self, x, t, log = False):
+    def forward(self, x, t):
         for layer in self.layers:
             x = layer.forward(x)
+
         res, loss = self.softmax.forward(x, t)
 
         res = mypy.argmax(res, axis=1)
         t = mypy.argmax(t, axis=1)
         acc = mypy.sum(res == t)
+
         return acc, loss
     
     def backward(self, log = False):
@@ -78,6 +76,7 @@ class VGG11:
         self.optimizer.update(self.params, grads)
         return dout
 
+    
     def make_layers(self, cfg, batch_norm=False, input_dim = [3, 32], class_num = 10, file_name = None, lac = False, prc = False):
         layers = []
         make_way = 'Init'
@@ -93,14 +92,14 @@ class VGG11:
         for l in cfg:
             if l == 'M':
                 layers += [Pooling(2, 2)]
-                input_dim[1] //= 2
+                input_dim[1] /= 2
                 continue
 
             # 卷积层
             if file_name is None:
                 self.params['Conv_W_' + str(len(layers))] = Conv.initialize_weights(l, (input_dim[0], 3, 3))
-                self.params['Conv_b_' + str(len(layers))] = Conv.initialize_bias(l, 1)    
-
+                self.params['Conv_b_' + str(len(layers))] = Conv.initialize_bias(l, 1)
+            
             if input_dim[1] == 14:
                 layers += [Conv(W=self.params['Conv_W_' + str(len(layers))],
                                 b=self.params['Conv_b_' + str(len(layers))],
@@ -124,16 +123,10 @@ class VGG11:
             # Batch Normalization
             if batch_norm == True:
                 if file_name is None:
-                    if lac:
-                        self.params['BN_Gamma_' + str(len(layers))] = mypy.ones((1, l, input_dim[1], input_dim[1]))
-                        self.params['BN_Beta_' + str(len(layers))] = mypy.zeros((1, l, input_dim[1], input_dim[1]))
-                        self.params['BN_running_mean_' + str(len(layers))] = mypy.zeros((1, l, input_dim[1], input_dim[1]))
-                        self.params['BN_running_var_' + str(len(layers))] = mypy.zeros((1, l, input_dim[1], input_dim[1]))
-                    else:
-                        self.params['BN_Gamma_' + str(len(layers))] = mypy.ones((1, l, 1, 1))
-                        self.params['BN_Beta_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
-                        self.params['BN_running_mean_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
-                        self.params['BN_running_var_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
+                    self.params['BN_Gamma_' + str(len(layers))] = mypy.ones((1, l, 1, 1))
+                    self.params['BN_Beta_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
+                    self.params['BN_running_mean_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
+                    self.params['BN_running_var_' + str(len(layers))] = mypy.zeros((1, l, 1, 1))
                     self.params['BN_Epsilon_' + str(len(layers))] = 1e-5
                 
                 layers += [BatchNorm(
@@ -156,7 +149,7 @@ class VGG11:
                        FC(self.params['FC_W_' + str(len(layers)+6)], self.params['FC_b_' + str(len(layers)+6)])]
 
         else:
-            FC_channel = [512, 4096, 4096, class_num]
+            FC_channel = [256 * input_dim[1] * input_dim[1], 1024, 512, class_num]
             for i in range(len(FC_channel) - 1):
                 FC_in = int(FC_channel[i])
                 FC_out = FC_channel[i+1]

@@ -8,7 +8,7 @@ def hint(*args):
 try:
     import cupy as mypy
     hint("[GPU Mode]")
-except ImportError:
+except Exception:
     import numpy as mypy
     hint("[CPU Mode]")
 
