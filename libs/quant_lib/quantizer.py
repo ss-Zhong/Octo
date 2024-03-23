@@ -4,13 +4,13 @@ from . import *
 # 随机舍入round
 def round(M):
     M_int = mypy.floor(M + mypy.random.random(M.shape))
-    # M_int = M_int.astype(int)
+    M_int = M_int.astype(int)
     return M_int
 
 
 class ConvQuantizer:
-    def __init__(self, num_bits = 8):
-        # 8位量化
+    def __init__(self, num_bits = 2):
+        # n位量化
         self.n = num_bits
 
         self.X_scale = 1.
@@ -22,9 +22,15 @@ class ConvQuantizer:
         self.dout_scale = 1.
         self.dout_zeroPoint = 0.
 
+    def hintQuant(self):
+        hint("X", self.X_scale, self.X_zeroPoint)
+        hint("W", self.W_scale, self.W_zeroPoint)
+        hint("dout", self.dout_scale, self.dout_zeroPoint)
+        pass
+
     # 计算Scale, Zero Point
     def calcSZSymm(self, tensor_min, tensor_max):
-        scale = max(abs(tensor_max), abs(tensor_min)) / (1 << (self.n - 1))
+        scale = max(abs(tensor_max), abs(tensor_min)) / ((1 << self.n - 1) - 1)
         zeroPoint = 0.0
 
         if scale == 0.0:
@@ -33,14 +39,24 @@ class ConvQuantizer:
         return scale, zeroPoint
     
     def calcSZAsymm(self, tensor_min, tensor_max):
-        scale = (tensor_max - tensor_min) / ((1 << self.n) - 1)
-        zeroPoint = int(0. - tensor_min / scale)
-
+        qmax = (1 << self.n - 1) - 1
+        scale = (tensor_max - tensor_min) / ((1 << self.n) - 2)
         if scale == 0.0:
             scale = 1.0
-            zero_point = 0.0
+            zeroPoint = 0.0
         else:
-            zeroPoint = int(0. - tensor_min / scale)
+            zeroPoint = qmax - tensor_max / scale
+
+        return scale, zeroPoint
+    
+    # 由于X向量一般都是大于0的 单独计算
+    def calcSZAsymmT(self, tensor_min, tensor_max):
+        scale = (tensor_max - tensor_min) / ((1 << self.n) - 2)
+        if scale == 0.0:
+            scale = 1.0
+            zeroPoint = 0.0
+        else:
+            zeroPoint = int(0.0 - tensor_min / scale)
 
         return scale, zeroPoint
     
@@ -62,16 +78,26 @@ class ConvQuantizer:
     
     # 非对称量化X, W
     def quantizeXAsymm(self, X_f):
-        self.X_scale, self.X_zeroPoint = self.calcSZAsymm(X_f.min(), X_f.max())
+        if X_f.min() * X_f.max()  >= 0.0:
+            self.X_scale, self.X_zeroPoint = self.calcSZAsymmT(X_f.min(), X_f.max())
+        else:
+            self.X_scale, self.X_zeroPoint = self.calcSZAsymm(X_f.min(), X_f.max())
         X_int8 = round(X_f / self.X_scale + self.X_zeroPoint)
         return X_int8
 
     def quantizeWAsymm(self, W_f):
-        self.W_scale, self.W_zero_point = self.calcSZAsymm(W_f.min(), W_f.max())
+        if W_f.min() * W_f.max()  >= 0.0:
+            self.W_scale, self.W_zeroPoint = self.calcSZAsymmT(W_f.min(), W_f.max())
+        else:
+            self.W_scale, self.W_zeroPoint = self.calcSZAsymm(W_f.min(), W_f.max())
         W_int8 = round(W_f / self.W_scale + self.W_zeroPoint)
         return W_int8
+    
+    def compensationAsymm(self, W_fp32, X_fp32, W_int8, X_int8):
+        delta_W, delta_X = W_fp32 / self.W_scale - W_int8, X_fp32 / self.X_scale - X_int8
+        return mypy.dot(X_fp32 / self.X_scale, delta_W) + mypy.dot(delta_X, W_int8)
 
-    # 去量化X, W
+    # 去量化  
     def dequantizeX(self, X_int8):
         X_q = (X_int8 - self.X_zeroPoint) * self.X_scale
         return X_q

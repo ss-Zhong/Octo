@@ -1,5 +1,5 @@
-import pickle
 from . import *
+import pickle
 import numpy
 
 LabelsDict = {
@@ -42,19 +42,12 @@ def getData(train=False):
         labels = batch[b'labels']
     return mypy.array(data), mypy.array(labels)
 
-def horizontal_flip(images):
-    batch_size, _, _, _ = images.shape
-    flip_mask = mypy.random.random(size=batch_size) < 0.5
-    images[flip_mask] = images[flip_mask, :, :, ::-1]
-
-    return images
-
 """
 加载cifar10数据集函数
-normalize: 是否将图像标准化(标准化到0~1之间)
+normalize: 是否将图像标准化
 flatten: 是否将图像展开
 """
-def loadCIFAR10(normalize = True, flatten = False):
+def loadDataset(normalize = True, flatten = False):
     dataset = {}
     dataset['train_img'], dataset['train_label']  = getData(train= True)
     dataset['test_img'], dataset['test_label'] = getData(train=False)

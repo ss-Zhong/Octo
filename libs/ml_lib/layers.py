@@ -1,27 +1,23 @@
 from libs.ml_lib.utils import *
 from libs.ml_lib.functions import *
-from .. import matrix
+# from .. import matrix
 from ..quant_lib.quantMode import QuantMode
 from ..quant_lib.quantizer import ConvQuantizer
 from . import *
 import time
-
 
 class Relu:
     def __init__(self):
         self.mask = None
 
     def forward(self, x):
-        self.mask = (x <= 0)
-        out = x.copy()
-        out[self.mask] = 0
+        self.mask = (x > 0)
+        out = mypy.maximum(0, x)
         return out
-    
+        
     def backward(self, dout):
-        dx = dout
-        dx[self.mask] = 0
-        return dx
-    
+        return dout * self.mask
+
 
 class Sigmoid:
     def __init__(self):
@@ -48,7 +44,6 @@ class SoftmaxWithLoss:
         if t is not None:
             self.t = t
             self.loss = cross_entropy_error(self.y, t)
-        
         return self.y, self.loss
 
     def backward(self, dout=1):
@@ -59,14 +54,14 @@ class SoftmaxWithLoss:
             dx = self.y.copy()
             dx[mypy.arange(batch_size), self.t] -= 1
             dx = dx / batch_size
-        
+
         return dx
 
 
 class Conv:
     def __init__(self, W, b,
                  stride=1, pad=0,
-                 quant_mode=QuantMode.FullPrecision):
+                 quant_mode=QuantMode.FullPrecision, prc = False):
         self.W = W
         self.b = b
 
@@ -77,48 +72,91 @@ class Conv:
         self.col = None
         self.col_W = None
 
-        self.quantizer = ConvQuantizer(num_bits=8)
+        self.quantizer = ConvQuantizer(num_bits=4)
         self.quant_mode = quant_mode
+        self.prc = prc
 
         self.dW = None
         self.db = None
+    
+    def parametrized_range_clipping(self, tensor):
+        # clip_max = mypy.percentile(tensor, 95)
+        # clip_min = mypy.percentile(tensor, 5)
+        clip_max = tensor.max()
+        clip_min = tensor.min()
+
+        if clip_max * clip_min >=0:
+            return mypy.clip(tensor, clip_min, clip_max)
+        else:
+            rangeMin = -clip_min if -clip_min < clip_max else clip_max
+            return mypy.clip(tensor, -rangeMin, rangeMin)
+    
+    def initialize_weights(out_channels, in_shape):
+        # 计算权重初始化的标准差
+        a = mypy.asarray(in_shape)
+        k = 1 / mypy.prod(a)
+        weight_std = mypy.sqrt(k)
+        # 从均匀分布中采样权重
+        weight = mypy.random.uniform(low=-weight_std, high=weight_std, size=(out_channels, *in_shape))
+        return weight
+    
+    def initialize_bias(out_channels, in_channel):
+        # 计算bias初始化的标准差
+        bias_std = mypy.sqrt(1 / in_channel)
+        bias = mypy.random.uniform(low=-bias_std, high=bias_std, size=out_channels)
+        return bias
 
     def forward(self, x):
+        s = time.perf_counter()
+        self.x = x
+
         N_W, _, H_W, W_W = self.W.shape
         N, _, H, W = x.shape
 
         out_h = (H + 2*self.pad - H_W)//self.stride + 1
         out_w = (W + 2*self.pad - W_W)//self.stride + 1
 
+        col = im2col(x, H_W, W_W, out_h, out_w,self.stride, self.pad)
+        col_W = self.W.reshape(N_W, -1).T
+
         # 全精度，不进行量化
         if self.quant_mode == QuantMode.FullPrecision:
-            col = im2col(x, H_W, W_W, self.stride, self.pad)                # col: N*out_h*out_w, C*H_W*W_W
-            col_W = self.W.reshape(N_W, -1).T                               # col_W: C*H_W*W_W, N_W
-
             out = mypy.dot(col, col_W) + self.b                               # out: N*out_h*out_w, N_W b: N_W
             out = out.reshape(N, out_h, out_w, -1).transpose(0, 3, 1, 2)    # out: N, N_W, out_h, out_w
-
-            self.x = x
             self.col = col
             self.col_W = col_W
 
-        # 对称量化
-        elif self.quant_mode == QuantMode.SymmQuantization:
-            x_int8 = self.quantizer.quantizeXSymm(x)
-            W_int8 = self.quantizer.quantizeWSymm(self.W)
+        # 量化
+        else:
+            # Parameterized Range Clipping
+            if self.prc:
+                col = self.parametrized_range_clipping(col)
+                col_W = self.parametrized_range_clipping(col_W)
 
-            col_int8 = im2col(x_int8, H_W, W_W, self.stride, self.pad)
-            col_W_int8 = W_int8.reshape(N_W, -1).T
+            # Asymm or Symm
+            if self.quant_mode == QuantMode.SymmQuantization:
+                col_int8 = self.quantizer.quantizeXSymm(col)
+                col_W_int8 = self.quantizer.quantizeWSymm(col_W)
+            else:
+                col_int8 = self.quantizer.quantizeXAsymm(col)
+                col_W_int8 = self.quantizer.quantizeWAsymm(col_W)
 
-            # 调用pybind+Eigen
-            out_int8 = mypy.dot(col_int8, col_W_int8) #
-            out = self.quantizer.dequantizeY(out_int8) + self.b
+            # 是否内置补偿
+            compensation = 0
+            if self.quant_mode == QuantMode.AsymmQuantizationWithCompensation:
+                compensation = self.quantizer.compensationAsymm(col_W, col, col_W_int8, col_int8)
+
+            out_int8 = mypy.dot(col_int8, col_W_int8) # 调用pybind+Eigen??????
+            out = self.quantizer.dequantizeY(out_int8 + compensation) + self.b
             out = out.reshape(N, out_h, out_w, -1).transpose(0, 3, 1, 2)
 
-            self.x = self.quantizer.dequantizeX(x_int8)
-            # 优化??????
-            self.col = self.quantizer.dequantizeX(col_int8)
-            self.col_W = self.quantizer.dequantizeW(col_W_int8)
+            # 由于反向时还需要量化，此处直接不进行解量化
+            # if self.quant_mode != QuantMode.SymmQuantization:
+            #     self.col = self.quantizer.dequantizeX(col_int8)
+            #     self.col_W = self.quantizer.dequantizeW(col_W_int8)
+            # else:
+            self.col = col_int8
+            self.col_W = col_W_int8
 
         return out
 
@@ -131,14 +169,20 @@ class Conv:
         # 全精度，不进行量化
         if self.quant_mode == QuantMode.FullPrecision:
             self.dW = mypy.dot(dout.T, self.col).reshape(N_W, C, H_W, W_W)
-
             dcol = mypy.dot(dout, self.col_W.T)
             dx = col2im(dcol, self.x.shape, H_W, W_W, self.stride, self.pad)
         
-        # 对称量化
-        elif self.quant_mode == QuantMode.SymmQuantization:
-            col_int8 = self.quantizer.quantizeXSymm(self.col)
-            col_W_int8 = self.quantizer.quantizeWSymm(self.col_W)
+        # 量化
+        else:
+            if self.prc:
+                dout = self.parametrized_range_clipping(dout)
+
+            # if self.quant_mode != QuantMode.SymmQuantization:
+            #     col_int8 = self.quantizer.quantizeXSymm(self.col)
+            #     col_W_int8 = self.quantizer.quantizeWSymm(self.col_W)
+            # else:
+            col_int8 = self.col
+            col_W_int8 = self.col_W
             dout_int8 = self.quantizer.quantizeDOUTSymm(dout)
 
             dW_int = mypy.dot(dout_int8.T, col_int8).reshape(N_W, C, H_W, W_W) #
@@ -147,7 +191,6 @@ class Conv:
             dcol_int = mypy.dot(dout_int8, col_W_int8.T) #
             dcol_q = self.quantizer.dequantize_dcol(dcol_int)
             dx = col2im(dcol_q, self.x.shape, H_W, W_W, self.stride, self.pad)
-
         return dx
 
 
@@ -161,6 +204,19 @@ class FC:
         self.dW = None
         self.db = None
 
+    def initialize_weights(out_channels, in_channel):
+        # 计算权重初始化的标准差
+        weight_std = mypy.sqrt(1 / in_channel)
+        # 从均匀分布中采样权重
+        weight = mypy.random.uniform(low=-weight_std, high=weight_std, size=(in_channel, out_channels))
+        return weight
+    
+    def initialize_bias(out_channels, in_channel):
+        # 计算bias初始化的标准差
+        bias_std = mypy.sqrt(1 / in_channel)
+        bias = mypy.random.uniform(low=-bias_std, high=bias_std, size=out_channels)
+        return bias
+
     def forward(self, x):
         self.xshape = x.shape
         self.x = x.reshape(x.shape[0], -1)
@@ -169,7 +225,7 @@ class FC:
 
     def backward(self, dout):
         self.dW = mypy.dot(self.x.T, dout)
-        self.db = mypy.sum(dout, axis=0, keepdims=True)
+        self.db = mypy.sum(dout, axis=0)
         dx = mypy.dot(dout, self.W.T).reshape(self.xshape)
 
         return dx
@@ -220,7 +276,6 @@ class BatchNorm:
         dvar = mypy.sum(dx_normalized * (self.x - self.mean) * -0.5 * (self.var + self.epsilon) ** (-1.5), axis=0)
         dmean = mypy.sum(dx_normalized * -1 / mypy.sqrt(self.var + self.epsilon), axis=0) + dvar * mypy.sum(-2 * (self.x - self.mean), axis=0) / batch_size
         dx = dx_normalized / mypy.sqrt(self.var + self.epsilon) + dvar * 2 * (self.x - self.mean) / batch_size + dmean / batch_size
-
         return dx
 
 
@@ -263,8 +318,7 @@ class Pooling:
         N, C, H, W = x.shape
         out_h = (H + 2*self.pad - self.pool_h)//self.stride + 1
         out_w = (W + 2*self.pad - self.pool_w)//self.stride + 1
-
-        col = im2col(x, self.pool_h, self.pool_w, self.stride, self.pad)
+        col = im2col(x, self.pool_h, self.pool_w, out_h, out_w,self.stride, self.pad)
         col = col.reshape(-1, self.pool_h*self.pool_w)
         out = None
 
@@ -293,63 +347,30 @@ class Pooling:
         dout = dout.transpose(0, 2, 3, 1)                                           # dout: N out_h out_w C
         
         pool_size = self.pool_h * self.pool_w
-        dmax = mypy.zeros((dout.size, pool_size))                                     # dmax: dout.size * pool_size
-        dmax[mypy.arange(self.arg_max.size), self.arg_max.flatten()] = dout.flatten() # dmax相应位置变为梯度
+        dmax = mypy.eye(4)[self.arg_max] * dout.reshape(-1, 1)
+        # dmax = mypy.zeros((dout.size, pool_size))                                     # dmax: dout.size * pool_size
+        # dmax[mypy.arange(self.arg_max.size), self.arg_max.flatten()] = dout.flatten() # dmax相应位置变为梯度
 
         # dmax = dmax.reshape(dout.shape + (pool_size,))                              # dmax: N out_h out_w C pool_size
-        # dmax = dmax.reshape(dmax.shape[0] * dmax.shape[1] * dmax.shape[2], -1)      # dcol: N*out_h*out_w C*pool_size
+        # dmax = dmax.reshape(dmax.shape[0] * dmax.shape[1] * dmax.shape[2], -1)      # dmax: N*out_h*out_w C*pool_size
         dx = col2im(dmax, self.x.shape, self.pool_h, self.pool_w, self.stride, self.pad)
         
         return dx
 
 
 class Compensation:
-    def __init__(self, alpha, mu, beta, clipping=False):
-        self.alpha = alpha
-        self.mu = mu
+    def __init__(self, quantizer, beta):
         self.beta = beta
-        self.clipping = clipping
-
-        self.d_alpha = None
-        self.d_mu = None
         self.d_beta = None
-
-        self.clip_max = None
-        self.clip_min = None
-        self.out = None
-
-    def parametrized_range_clipping(self, tensor, z=2.576):
-        n = tensor.size
-        if n == 0:
-            return tensor
-
-        self.clip_max = 0.95 * mypy.max(tensor)
-        self.clip_min = 0.95 * mypy.min(tensor)
-
-        return mypy.clip(tensor, self.clip_min, self.clip_max)
+        self.mut = 0
+        self.quantizer = quantizer
 
     def forward(self, x):
-        out = x + self.alpha * self.mu + self.beta
-        self.out = out
-
-        if self.clipping:
-            out = self.parametrized_range_clipping(out)
-
+        self.mut = self.quantizer.X_scale * self.quantizer.W_scale * self.quantizer.X_zeroPoint
+        out = x - self.beta * self.mut
         return out
 
     def backward(self, dout):
-        if self.clipping:
-            dout_clip_mask = self.out
-            with mypy.nditer(dout_clip_mask, op_flags=['readwrite']) as it:
-                for x in it:
-                    if x > self.clip_max or x < self.clip_min:
-                        x[...] = 0.0
-                    else:
-                        x[...] = 1.0
-            dout *= dout_clip_mask
-
-        self.d_alpha = mypy.sum(dout * self.mu, axis=0)
-        self.d_mu = self.alpha * dout
-        self.d_beta = dout
-
+        # 计算梯度
+        self.d_beta = mypy.sum(-1 * dout * self.mut, axis=0)
         return dout

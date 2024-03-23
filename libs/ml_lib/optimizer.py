@@ -14,20 +14,19 @@ class SGD_Momentum:
         self.lr = lr
         self.momentum = momentum
         self.v = None
-        self.pattern = re.compile(".*_W_.*")
+        self.pattern = re.compile("Conv_W_.*")
         self.weight_decay = weight_decay
-        
+
     def update(self, params, grads):
         if self.v is None:
-            self.v = {}
-            for key in grads.keys():
-                self.v[key] = mypy.zeros_like(params[key])
-     
-        for key in grads.keys():
-            if self.pattern.match(key) and self.weight_decay != 0:
-                params[key] *= 1 - self.weight_decay
-            self.v[key] = self.momentum * self.v[key] + self.lr*grads[key] 
-            params[key] -= self.v[key]
+            self.v = {key: mypy.zeros_like(val) for key, val in grads.items()}
+
+        for key, grad in grads.items():
+            if self.weight_decay != 0 and self.pattern.match(key):
+                grad += self.weight_decay * params[key]
+
+            self.v[key] = self.momentum * self.v[key] + grad
+            params[key] -= self.v[key] * self.lr
 
 class AdaGrad:
     def __init__(self, lr=0.01):
