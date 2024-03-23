@@ -22,3 +22,4 @@ with open(file_name, 'rb') as f:
 
     # 显示图形
     plt.show()
+

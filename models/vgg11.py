@@ -146,7 +146,7 @@ class VGG11:
             
             layers += [Relu()]
             input_dim[0] = l
- 
+
         # 全连接层
         if file_name:
             layers += [FC(self.params['FC_W_' + str(len(layers))], self.params['FC_b_' + str(len(layers))]),
